@@ -8,7 +8,3 @@ echo GOPATH=/path/to/6.824
 ```
 
 
-
-
-### Lab 1
-
