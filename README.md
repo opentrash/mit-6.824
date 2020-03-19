@@ -8,3 +8,5 @@ echo GOPATH=/path/to/6.824
 ```
 
 
+
+Link: https://pdos.csail.mit.edu/6.824/schedule.html
