@@ -75,6 +75,9 @@ func main() {
 		for k := i; k < j; k++ {
 			values = append(values, intermediate[k].Value)
 		}
+
+		// word, array of { word, "1" }
+		// each word will reduce once
 		output := reducef(intermediate[i].Key, values)
 
 		// this is the correct format for each line of Reduce output.

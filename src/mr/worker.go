@@ -1,10 +1,19 @@
+/**
+ * The workers will talk to the master via RPC.
+ * Each worker process will ask the master for a task,
+ * read the task's input from one or more files,
+ * execute the task, and write the task's output to one or more files.
+ */
+
 package mr
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 import "log"
 import "net/rpc"
 import "hash/fnv"
-
 
 //
 // Map functions return a slice of KeyValue.
@@ -24,36 +33,61 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
+	// register the worker
+	workerId := registerWorker().Id
 
-	// uncomment to send the Example RPC to the master.
-	// CallExample()
+	// heartbeat every one second
+	go heartbeat(workerId)
 
+	// 1. fetch task
+	// 2. excute the task
+	// 3. return the task result to master
+	// 4. go back to 1
+	// heartbeat at every second
+
+	time.Sleep(30 * time.Minute)
 }
 
 //
-// example function to show how to make an RPC call to the master.
+// register worker to master
 //
-func CallExample() {
+func registerWorker() RegisterWorkerReply {
+	args := RegisterWorkerArgs{}
 
-	// declare an argument structure.
-	args := ExampleArgs{}
+	reply := RegisterWorkerReply{}
 
-	// fill in the argument(s).
-	args.X = 99
+	call("Master.RegisterWorker", &args, &reply)
 
-	// declare a reply structure.
-	reply := ExampleReply{}
+	fmt.Printf("workerId: %v\n", reply.Id)
 
-	// send the RPC request, wait for the reply.
-	call("Master.Example", &args, &reply)
+	return reply
+}
 
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
+//
+// send heartbeat to master
+// every one second
+//
+func heartbeat(workerId int) {
+	for {
+		args := WorkerHeartbeatArgs{Id: workerId}
+		reply := WorkerHeartbeatReply{Ack: false}
+		call("Master.ListenHeartbeat", &args, &reply)
+		if !reply.Ack {
+			fmt.Println("Something goes wrong in master.")
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+//
+// fetch a task
+//
+func fetchTask() {
+
 }
 
 //
@@ -74,6 +108,7 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
+	fmt.Println("holy fuck here")
 	fmt.Println(err)
 	return false
 }
