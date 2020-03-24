@@ -95,8 +95,9 @@ func mapWork(mapf func(string, string) []KeyValue, filename string, taskId int, 
 	}
 	submitReply := SubmitTaskResultReply{Ack: false}
 	call("Master.SubmitTask", &submitArgs, &submitReply)
+	fmt.Printf("Submit the task %v\n", taskId)
 	if !submitReply.Ack {
-		fmt.Println("Something goes wrong in master.")
+		// fmt.Println("Something goes wrong in master.")
 	}
 }
 
@@ -107,9 +108,7 @@ func writeIntermediateToFiles(kvs [][]KeyValue, nReduce int, taskId int) {
 	i := 0
 	for i < nReduce {
 		subKvs := kvs[i]
-		oname := fmt.Sprintf("temp_files/%s-%d-%d", "mr", taskId, i)
-		// TODO maybe need to merge them into % nReduce ?
-		// append values to the file
+		oname := fmt.Sprintf("%s-%d-%d", "mr", taskId, i)
 		ofile, _ := os.Create(oname)
 		enc := json.NewEncoder(ofile)
 
@@ -127,8 +126,68 @@ func writeIntermediateToFiles(kvs [][]KeyValue, nReduce int, taskId int) {
 //
 // reduce work
 //
-func reduceWork(reducef func(string, []string) string) {
+func reduceWork(reducef func(string, []string) string, nReduceId string, taskId int, workerId int, extra int) {
+	kvs := []KeyValue{}
+	// read mr-*-nReduceId from disk
+	i := 1
+	// fmt.Printf("extra:%v\n", extra)
+	for i <= extra {
+		oname := fmt.Sprintf("%s-%d-%v", "mr", i, nReduceId)
+		ofile, err := os.Open(oname)
+		if err != nil {
+			// fmt.Printf("open err: %v\n", err)
+		}
+		dec := json.NewDecoder(ofile)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kvs = append(kvs, kv)
+		}
+		ofile.Close()
+		i++
+	}
 
+	sort.Sort(ByKey(kvs))
+
+	outputOname := fmt.Sprintf("mr-out-%v", nReduceId)
+	ofile, _ := os.Create(outputOname)
+
+	i = 0
+	for i < len(kvs) {
+		j := i + 1
+		for j < len(kvs) && kvs[j].Key == kvs[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, kvs[k].Value)
+		}
+
+		// word, array of { word, "1" }
+		// each word will reduce once
+		output := reducef(kvs[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", kvs[i].Key, output)
+
+		i = j
+	}
+
+	ofile.Close()
+
+	// submit map work result to master
+	submitArgs := SubmitTaskResultArgs{
+		WorkerId: workerId,
+		TaskId:   taskId,
+		Result:   "",
+	}
+	submitReply := SubmitTaskResultReply{Ack: false}
+	call("Master.SubmitTask", &submitArgs, &submitReply)
+	if !submitReply.Ack {
+		// fmt.Println("Something goes wrong in master.")
+	}
 }
 
 func Worker(mapf func(string, string) []KeyValue,
@@ -136,15 +195,18 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// Your worker implementation here.
 	// register the worker
+
 	registerWorkerReply := registerWorker()
 	workerId := registerWorkerReply.Id
+	fmt.Printf("here id:%v\n", workerId)
 	nReduce := registerWorkerReply.NReduce
 
 	go working(workerId, mapf, reducef, nReduce)
 	// heartbeat every one second
 	go heartbeat(workerId)
 
-	time.Sleep(30 * time.Minute)
+	time.Sleep(time.Hour)
+
 }
 
 //
@@ -157,15 +219,15 @@ func Worker(mapf func(string, string) []KeyValue,
 func working(workerId int, mapf func(string, string) []KeyValue, reducef func(string, []string) string, nReduce int) {
 	for {
 		task := fetchTask(workerId)
-		fmt.Printf("Excuting task %v.\n", task.Id)
+		// fmt.Printf("Excuting task %v.\n", task.Id)
 		if task.Type == "Map" {
 			// map task
 			filename := task.Detail
 			mapWork(mapf, filename, task.Id, workerId, nReduce)
 		} else {
 			// reduce task
-			fmt.Printf("Reduce task here")
-			time.Sleep(50 * time.Minute)
+			// fmt.Printf("Reduce task here %v\n", task.Id)
+			reduceWork(reducef, task.Detail, task.Id, workerId, task.Extra)
 		}
 	}
 }
@@ -177,9 +239,10 @@ func fetchTask(workerId int) Task {
 	args := TaskDistributeArgs{
 		WorkerId: workerId,
 	}
-	reply := TaskDistributeReply{}
-	task := Task{}
 	for {
+		reply := TaskDistributeReply{}
+		task := Task{}
+		fmt.Printf("asking for a task\n")
 		call("Master.AssignTask", &args, &reply)
 		if reply.Message == "" {
 			fmt.Printf("Fetch task %v from master\n", reply.Task.Id)
@@ -191,6 +254,14 @@ func fetchTask(workerId int) Task {
 		} else if reply.Message == "MasterDone" {
 			fmt.Printf("Shutting down the worker because of the MapReduce job finishes.\n")
 			os.Exit(0)
+		} else if reply.Message == "Forbidden" {
+			fmt.Println("Finish temp task before asking for another one.\n")
+			time.Sleep(time.Second)
+			// TODO handle something here
+			// os.Exit(0)
+		} else if reply.Message == "Lost" {
+			fmt.Println("Marked Lost from master, exiting.\n")
+			// os.Exit(0)
 		}
 	}
 }
@@ -220,9 +291,9 @@ func heartbeat(workerId int) {
 		reply := WorkerHeartbeatReply{Ack: false}
 		call("Master.ListenHeartbeat", &args, &reply)
 		if !reply.Ack {
-			fmt.Println("Something goes wrong in master.")
+			// fmt.Println("Something goes wrong in master.")
 		}
-		time.Sleep(time.Second)
+		time.Sleep(1000 * time.Millisecond)
 	}
 }
 
@@ -251,7 +322,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	fmt.Println("holy fuck here")
 	fmt.Println(err)
 	return false
 }

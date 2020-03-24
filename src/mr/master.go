@@ -12,11 +12,13 @@ package mr
 
 import "log"
 import "net"
+
 import "os"
 import "net/rpc"
 import "net/http"
 import "sync"
 import "time"
+import "strconv"
 
 // for debug
 import "fmt"
@@ -52,6 +54,7 @@ type Task struct {
 	Id     int
 	State  TaskState
 	Detail string
+	Extra  int
 	Type   string
 }
 
@@ -114,6 +117,7 @@ func (m *Master) RegisterWorker(_ *RegisterWorkerArgs, reply *RegisterWorkerRepl
 	reply.Id = newWorkerId
 	reply.State = WorkerIdle
 	reply.NReduce = m.NReduce
+	fmt.Printf("Registed new worker id: %v\n", reply.Id)
 	return nil
 }
 
@@ -124,7 +128,7 @@ func (m *Master) RegisterWorker(_ *RegisterWorkerArgs, reply *RegisterWorkerRepl
 func (m *Master) ListenHeartbeat(args *WorkerHeartbeatArgs, reply *WorkerHeartbeatReply) error {
 	m.mLock.Lock()
 	defer m.mLock.Unlock()
-	fmt.Println("Heartbeat from worker ", args.Id)
+	// fmt.Println("Heartbeat from worker ", args.Id)
 	workerId := args.Id
 	for idx, worker := range m.Workers {
 		if worker.Id == workerId {
@@ -150,6 +154,25 @@ func (m *Master) RegisterMapTasks(files []string) {
 		}
 		m.MapTasks = append(m.MapTasks, mapTask)
 	}
+	m.State = InMapping
+}
+
+//
+// init reduce tasks
+//
+func (m *Master) RegisterReduceTasks(nReduce int) {
+	i := 0
+	for i < nReduce {
+		reduceTask := Task{
+			Id:     len(m.ReduceTasks) + 1,
+			State:  TaskTodo,
+			Type:   "Reduce",
+			Detail: strconv.Itoa(i),
+			Extra:  len(m.MapTasks),
+		}
+		m.ReduceTasks = append(m.ReduceTasks, reduceTask)
+		i++
+	}
 }
 
 //
@@ -174,7 +197,18 @@ func (m *Master) AssignTask(args *TaskDistributeArgs, reply *TaskDistributeReply
 	// tell the worker to wait until there are some reduce tasks
 	m.mLock.Lock()
 	defer m.mLock.Unlock()
-	fmt.Printf("Looking for an idle task for worker %v\n", args.WorkerId)
+	fmt.Printf("Get assignment from worker: %v\n", args.WorkerId)
+	for _, worker := range m.Workers {
+		if worker.Id == args.WorkerId && (worker.State == WorkerBusy) {
+			reply.Message = "Forbidden"
+			return nil
+		}
+		if worker.Id == args.WorkerId && (worker.State == WorkerLost) {
+			reply.Message = "Lost"
+			return nil
+		}
+	}
+	// fmt.Printf("Looking for an idle task for worker %v\n", args.WorkerId)
 	if m.State == MasterDone {
 		reply.Message = "MasterDone"
 		return nil
@@ -239,12 +273,43 @@ func (m *Master) FinishTask(taskId int) {
 }
 
 //
+// check if all tasks are done
+// to change master state
+//
+func (m *Master) ScanTasks() {
+	allMapDone := true
+	for _, task := range m.MapTasks {
+		if task.State == TaskTodo || task.State == TaskInProgress {
+			allMapDone = false
+		}
+	}
+	if allMapDone {
+		m.State = InReducing
+	} else {
+		return
+	}
+	allReduceDone := true
+	for _, task := range m.ReduceTasks {
+		if task.State == TaskTodo || task.State == TaskInProgress {
+			allReduceDone = false
+		}
+	}
+	if allReduceDone {
+		m.State = MasterDone
+	}
+}
+
+//
 // mark worker state
 //
 func (m *Master) MarkWorkerState(workerId int, state WorkerState) {
+	// fmt.Printf("worker id:%v\n", workerId)
 	for idx, worker := range m.Workers {
-		worker.State = state
-		m.Workers[idx] = worker
+		if worker.Id == workerId {
+			worker.State = state
+			m.Workers[idx] = worker
+			break
+		}
 	}
 	// TODO what if this worker does no exist
 }
@@ -255,9 +320,35 @@ func (m *Master) MarkWorkerState(workerId int, state WorkerState) {
 func (m *Master) SubmitTask(args *SubmitTaskResultArgs, reply *SubmitTaskResultReply) error {
 	m.mLock.Lock()
 	defer m.mLock.Unlock()
-	m.FinishTask(args.TaskId)
-	m.MarkWorkerState(args.WorkerId, WorkerIdle)
+	tasks := []Task{}
+	if m.State == InMapping {
+		tasks = m.MapTasks
+	} else {
+		tasks = m.ReduceTasks
+	}
+	for idx, task := range tasks {
+		if task.Id == args.TaskId {
+			task.State = TaskDone
+			if m.State == InMapping {
+				m.MapTasks[idx] = task
+			} else {
+				m.ReduceTasks[idx] = task
+			}
+			break
+		}
+	}
+	for idx, worker := range m.Workers {
+		if worker.Id == args.WorkerId {
+			worker.State = WorkerIdle
+			m.Workers[idx] = worker
+			break
+		}
+	}
 	reply.Ack = true
+
+	// check if all map tasks are be done
+	m.ScanTasks()
+
 	return nil
 }
 
@@ -272,11 +363,12 @@ func (m *Master) FetchTodoTask() {
 // mark the worker as lost if this worker didn't
 // response in the last 10 seconds
 //
-func (m *Master) scanWorkers() {
+func (m *Master) ScanWorkers() {
 	m.mLock.Lock()
 	defer m.mLock.Unlock()
 	for idx, worker := range m.Workers {
 		timeGap := time.Now().Unix() - worker.LastHeartbeat
+		fmt.Printf("TimeGap: %v from worker %v\n", timeGap, worker.Id)
 		// worker lost
 		if timeGap > 10 {
 			// if this worker is dealing with some task
@@ -314,14 +406,30 @@ func (m *Master) scanWorkers() {
 //
 // scan each worker every 2 (for example) seconds
 //
-func (m *Master) scanWorkersEvery(seconds time.Duration) {
+func (m *Master) ScanWorkersEvery(seconds time.Duration) {
 	for {
-		m.scanWorkers()
+		m.ScanWorkers()
 		time.Sleep(seconds * time.Second)
 	}
 }
 
 func (m *Master) printWorkers() {
+	fmt.Printf("Master state: %v \n", m.State)
+	remainTask := 0
+	if m.State == InMapping {
+		for _, task := range m.MapTasks {
+			if task.State != TaskDone {
+				remainTask++
+			}
+		}
+	} else {
+		for _, task := range m.ReduceTasks {
+			if task.State != TaskDone {
+				remainTask++
+			}
+		}
+	}
+	fmt.Printf("remainint tasks: %v\n", remainTask)
 	for _, worker := range m.Workers {
 		fmt.Printf("Worker Id: %v    ", worker.Id)
 		state := "Idle"
@@ -338,33 +446,27 @@ func (m *Master) printWorkers() {
 		default:
 			break
 		}
-		fmt.Printf("State: %v", state)
+		fmt.Printf("State: %v\n", state)
 		if state == "Busy" {
-			fmt.Printf(" on task %v\n", worker.TaskId)
+			fmt.Printf("Busy on : %v\n", worker.TaskId)
 		}
 	}
+	fmt.Println()
 }
 
 //
 // start a thread that listens for RPCs from worker.go
 //
 func (m *Master) server() {
-	registerErr := rpc.Register(m)
-	if registerErr != nil {
-		log.Fatal("dialing:", registerErr)
-	}
-
+	rpc.Register(m)
 	rpc.HandleHTTP()
 	//l, e := net.Listen("tcp", ":1234")
-	removeErr := os.Remove("mr-socket")
-	if removeErr != nil {
-		log.Fatal("dialing:", removeErr)
-	}
+	os.Remove("mr-socket")
 	l, e := net.Listen("unix", "mr-socket")
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
-	go http.Serve(l, nil) // concurrence running for RPC listener
+	go http.Serve(l, nil)
 }
 
 //
@@ -378,6 +480,9 @@ func (m *Master) Done() bool {
 	// Your code here.
 
 	// check if all tasks are done
+	if m.State == MasterDone {
+		ret = true
+	}
 
 	return ret
 }
@@ -399,11 +504,12 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 	// init map tasks
 	m.RegisterMapTasks(files)
+	m.RegisterReduceTasks(nReduce)
 
 	// rpc
 	// listen to workers
 	m.server()
-	go m.scanWorkersEvery(2)
+	go m.ScanWorkersEvery(2)
 
 	return &m
 }

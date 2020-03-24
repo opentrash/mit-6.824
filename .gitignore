@@ -5,3 +5,8 @@ api.key
 **/**.so
 tags
 **/temp_files
+src/main/mr-tmp
+src/main/mrmaster
+src/main/mrsequential
+src/main/mrworker
+src/main/mr-out-*

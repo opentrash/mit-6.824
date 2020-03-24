@@ -19,6 +19,7 @@ func nparallel(phase string) int {
 	// we're running at the same time as them.
 	pid := os.Getpid()
 	myfilename := fmt.Sprintf("mr-worker-%s-%d", phase, pid)
+	fmt.Printf("worker name:%v\n", myfilename)
 	err := ioutil.WriteFile(myfilename, []byte("x"), 0666)
 	if err != nil {
 		panic(err)
