@@ -8,12 +8,16 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
 import "log"
 import "net/rpc"
 import "hash/fnv"
+import "os"
+import "io/ioutil"
+import "sort"
 
 //
 // Map functions return a slice of KeyValue.
@@ -22,6 +26,14 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -33,22 +45,154 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+//
+// save intermediate data to
+// mr-X-Y
+// X is map task number
+// Y is reduce task number
+//
+func mapWork(mapf func(string, string) []KeyValue, filename string, taskId int, workerId int, nReduce int) {
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+	intermediate := mapf(filename, string(content))
+
+	// array of { word, "1" }
+	// put the same word to same file
+	sort.Sort(ByKey(intermediate))
+
+	// init kvs to store nReduce KeyValues
+	kvs := [][]KeyValue{}
+	for i := 0; i < nReduce; i++ {
+		subKvs := []KeyValue{}
+		kvs = append(kvs, subKvs)
+	}
+
+	i := 0
+	for i < len(intermediate) {
+
+		// word is intermediate[i].Key
+		// TODO change this to temp file
+		word := intermediate[i].Key
+		hash := ihash(word) % nReduce
+		kvs[hash] = append(kvs[hash], intermediate[i])
+		i++
+	}
+
+	writeIntermediateToFiles(kvs, nReduce, taskId)
+
+	// submit map work result to master
+	submitArgs := SubmitTaskResultArgs{
+		WorkerId: workerId,
+		TaskId:   taskId,
+		Result:   "",
+	}
+	submitReply := SubmitTaskResultReply{Ack: false}
+	call("Master.SubmitTask", &submitArgs, &submitReply)
+	if !submitReply.Ack {
+		fmt.Println("Something goes wrong in master.")
+	}
+}
+
+//
+// write intermediate to files
+//
+func writeIntermediateToFiles(kvs [][]KeyValue, nReduce int, taskId int) {
+	i := 0
+	for i < nReduce {
+		subKvs := kvs[i]
+		oname := fmt.Sprintf("temp_files/%s-%d-%d", "mr", taskId, i)
+		// TODO maybe need to merge them into % nReduce ?
+		// append values to the file
+		ofile, _ := os.Create(oname)
+		enc := json.NewEncoder(ofile)
+
+		for _, kv := range subKvs {
+			err := enc.Encode(kv)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		ofile.Close()
+		i++
+	}
+}
+
+//
+// reduce work
+//
+func reduceWork(reducef func(string, []string) string) {
+
+}
+
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	// Your worker implementation here.
 	// register the worker
-	workerId := registerWorker().Id
+	registerWorkerReply := registerWorker()
+	workerId := registerWorkerReply.Id
+	nReduce := registerWorkerReply.NReduce
 
+	go working(workerId, mapf, reducef, nReduce)
 	// heartbeat every one second
 	go heartbeat(workerId)
 
-	// 1. fetch task
-	// 2. excute the task
-	// 3. return the task result to master
-	// 4. go back to 1
-
 	time.Sleep(30 * time.Minute)
+}
+
+//
+// 1. fetch task
+// 2. excute the task
+// 3. return the task result to master
+// 4. go back to 1
+// handle waiting
+//
+func working(workerId int, mapf func(string, string) []KeyValue, reducef func(string, []string) string, nReduce int) {
+	for {
+		task := fetchTask(workerId)
+		fmt.Printf("Excuting task %v.\n", task.Id)
+		if task.Type == "Map" {
+			// map task
+			filename := task.Detail
+			mapWork(mapf, filename, task.Id, workerId, nReduce)
+		} else {
+			// reduce task
+			fmt.Printf("Reduce task here")
+			time.Sleep(50 * time.Minute)
+		}
+	}
+}
+
+//
+// fetch a task
+//
+func fetchTask(workerId int) Task {
+	args := TaskDistributeArgs{
+		WorkerId: workerId,
+	}
+	reply := TaskDistributeReply{}
+	task := Task{}
+	for {
+		call("Master.AssignTask", &args, &reply)
+		if reply.Message == "" {
+			fmt.Printf("Fetch task %v from master\n", reply.Task.Id)
+			task = reply.Task
+			return task
+		} else if reply.Message == "Wait" {
+			fmt.Printf("Keep waiting until there are some idle tasks.\n")
+			time.Sleep(time.Second)
+		} else if reply.Message == "MasterDone" {
+			fmt.Printf("Shutting down the worker because of the MapReduce job finishes.\n")
+			os.Exit(0)
+		}
+	}
 }
 
 //
@@ -83,9 +227,9 @@ func heartbeat(workerId int) {
 }
 
 //
-// fetch a task
+// mock that maybe this worker would be broken
 //
-func fetchTask() {
+func maybeBreak() {
 
 }
 

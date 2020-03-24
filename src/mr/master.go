@@ -32,10 +32,43 @@ const (
 	WorkerLost
 )
 
+type MasterState uint8
+
+const (
+	InMapping MasterState = iota
+	InReducing
+	MasterDone
+)
+
+type TaskState uint8
+
+const (
+	TaskTodo TaskState = iota
+	TaskInProgress
+	TaskDone
+)
+
 type Task struct {
-	Id   int
-	Type string
+	Id     int
+	State  TaskState
+	Detail string
+	Type   string
 }
+
+// type MapTask struct {
+//     Id       int
+//     State    TaskState
+//     FileName string
+// }
+
+// //
+// // each word needs a reduce task
+// //
+// type ReduceTask struct {
+//     Id    int
+//     State TaskState
+//     Word  string
+// }
 
 // worker record struct
 type WorkerRec struct {
@@ -45,11 +78,19 @@ type WorkerRec struct {
 	TaskId        int
 }
 
+// Your definitions here.
+// MapTask from slice to queue ?
+// TODO change slice to map ?
+// k MapTasks
+// each map task will produce nReduce files for reduce task
+// so there would be nReduce reduce tasks to handle mr-*-hash
 type Master struct {
-	// Your definitions here.
-	Workers []WorkerRec
-	Tasks   []string
-	mLock   sync.Mutex
+	Workers     []WorkerRec
+	MapTasks    []Task
+	ReduceTasks []Task
+	State       MasterState
+	NReduce     int
+	mLock       sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -72,6 +113,7 @@ func (m *Master) RegisterWorker(_ *RegisterWorkerArgs, reply *RegisterWorkerRepl
 	m.Workers = append(m.Workers, newWorker)
 	reply.Id = newWorkerId
 	reply.State = WorkerIdle
+	reply.NReduce = m.NReduce
 	return nil
 }
 
@@ -96,11 +138,133 @@ func (m *Master) ListenHeartbeat(args *WorkerHeartbeatArgs, reply *WorkerHeartbe
 }
 
 //
+// init Map tasks
+//
+func (m *Master) RegisterMapTasks(files []string) {
+	for _, file := range files {
+		mapTask := Task{
+			Id:     len(m.MapTasks) + 1,
+			Detail: file,
+			State:  TaskTodo,
+			Type:   "Map",
+		}
+		m.MapTasks = append(m.MapTasks, mapTask)
+	}
+}
+
+//
+// get worker by id
+//
+// func (m *Master) GetWorker(workerId int) WorkerRec {
+//     for _, worker := range m.Workers {
+//         if worker.Id == workerId {
+//             return worker
+//         }
+//     }
+//     log.Fatal("There is no worker's id %v\n", workerId)
+// }
+
+//
 // assign task to worker
 // must lock
 //
 func (m *Master) AssignTask(args *TaskDistributeArgs, reply *TaskDistributeReply) error {
+	// find a todo task and return it to worker
+	// if there aren't any map tasks to do
+	// tell the worker to wait until there are some reduce tasks
+	m.mLock.Lock()
+	defer m.mLock.Unlock()
+	fmt.Printf("Looking for an idle task for worker %v\n", args.WorkerId)
+	if m.State == MasterDone {
+		reply.Message = "MasterDone"
+		return nil
+	}
+	tasks := []Task{}
+	if m.State == InMapping {
+		tasks = m.MapTasks
+	} else {
+		tasks = m.ReduceTasks
+	}
+	for idx, task := range tasks {
+		if task.State == TaskTodo {
+			// return this task to the worker
+			reply.Task = task
+			reply.Message = ""
+			task.State = TaskInProgress
+			for idxWorker, worker := range m.Workers {
+				if worker.Id == args.WorkerId {
+					fmt.Printf("Assigning task %v to worker %v\n", task.Id, worker.Id)
+					worker.TaskId = task.Id
+					worker.State = WorkerBusy
+					m.Workers[idxWorker] = worker
+					if m.State == InMapping {
+						m.MapTasks[idx] = task
+					} else {
+						m.ReduceTasks[idx] = task
+					}
+					break
+				}
+			}
+			return nil
+		}
+	}
+
+	reply.Message = "Wait"
+
 	return nil
+}
+
+//
+// mark task with TaskID as Done
+//
+func (m *Master) FinishTask(taskId int) {
+	tasks := []Task{}
+	if m.State == InMapping {
+		tasks = m.MapTasks
+	} else {
+		tasks = m.ReduceTasks
+	}
+	for idx, task := range tasks {
+		if task.Id == taskId {
+			task.State = TaskDone
+			if m.State == InMapping {
+				m.MapTasks[idx] = task
+			} else {
+				m.ReduceTasks[idx] = task
+			}
+			break
+		}
+	}
+	// TODO what if there is no task with taskId
+}
+
+//
+// mark worker state
+//
+func (m *Master) MarkWorkerState(workerId int, state WorkerState) {
+	for idx, worker := range m.Workers {
+		worker.State = state
+		m.Workers[idx] = worker
+	}
+	// TODO what if this worker does no exist
+}
+
+//
+// submit a task result by worker
+//
+func (m *Master) SubmitTask(args *SubmitTaskResultArgs, reply *SubmitTaskResultReply) error {
+	m.mLock.Lock()
+	defer m.mLock.Unlock()
+	m.FinishTask(args.TaskId)
+	m.MarkWorkerState(args.WorkerId, WorkerIdle)
+	reply.Ack = true
+	return nil
+}
+
+//
+// find a todo task
+//
+func (m *Master) FetchTodoTask() {
 }
 
 //
@@ -112,13 +276,31 @@ func (m *Master) scanWorkers() {
 	m.mLock.Lock()
 	defer m.mLock.Unlock()
 	for idx, worker := range m.Workers {
-		// worker lost
 		timeGap := time.Now().Unix() - worker.LastHeartbeat
+		// worker lost
 		if timeGap > 10 {
 			// if this worker is dealing with some task
-			// assign the task to another idle worker
+			// assign this task to an idle worker
+			// by marking the task to be todo
 			if worker.State == WorkerBusy {
-
+				taskId := worker.TaskId
+				tasks := []Task{}
+				if m.State == InMapping {
+					tasks = m.MapTasks
+				} else {
+					tasks = m.ReduceTasks
+				}
+				for taskIdx, task := range tasks {
+					if task.Id == taskId {
+						task.State = TaskTodo
+						if m.State == InMapping {
+							m.MapTasks[taskIdx] = task
+						} else {
+							m.ReduceTasks[taskIdx] = task
+						}
+						break
+					}
+				}
 			}
 
 			// mark the worker as lost
@@ -156,7 +338,10 @@ func (m *Master) printWorkers() {
 		default:
 			break
 		}
-		fmt.Printf("State: %v\n", state)
+		fmt.Printf("State: %v", state)
+		if state == "Busy" {
+			fmt.Printf(" on task %v\n", worker.TaskId)
+		}
 	}
 }
 
@@ -204,26 +389,21 @@ func (m *Master) Done() bool {
 //
 func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{
-		Workers: []WorkerRec{},
-		Tasks:   []string{},
+		Workers:     []WorkerRec{},
+		MapTasks:    []Task{},
+		ReduceTasks: []Task{},
+		NReduce:     nReduce,
 	}
 
 	// Your code here.
 
-	// get files from mrmaster.go
-
-	for _, file := range files {
-		fmt.Println("file:", file)
-	}
-
-	// init tasks according to files
+	// init map tasks
+	m.RegisterMapTasks(files)
 
 	// rpc
 	// listen to workers
 	m.server()
 	go m.scanWorkersEvery(2)
-
-	// Your code here.
 
 	return &m
 }
