@@ -47,7 +47,6 @@ func Worker(mapf func(string, string) []KeyValue,
 	// 2. excute the task
 	// 3. return the task result to master
 	// 4. go back to 1
-	// heartbeat at every second
 
 	time.Sleep(30 * time.Minute)
 }

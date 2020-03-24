@@ -27,23 +27,29 @@ import "fmt"
 type WorkerState uint8
 
 const (
-	Worker_Idle WorkerState = iota
-	Worker_Busy
-	Worker_Lost
+	WorkerIdle WorkerState = iota
+	WorkerBusy
+	WorkerLost
 )
 
-type WorkerRec struct {
-	Id        int
-	State     WorkerState
-	LastAlive int64
+type Task struct {
+	Id   int
+	Type string
 }
 
-var mLock sync.Mutex
+// worker record struct
+type WorkerRec struct {
+	Id            int
+	State         WorkerState
+	LastHeartbeat int64
+	TaskId        int
+}
 
 type Master struct {
 	// Your definitions here.
 	Workers []WorkerRec
 	Tasks   []string
+	mLock   sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -53,19 +59,19 @@ type Master struct {
 // must lock
 //
 func (m *Master) RegisterWorker(_ *RegisterWorkerArgs, reply *RegisterWorkerReply) error {
-	mLock.Lock()
-	defer mLock.Unlock()
+	m.mLock.Lock()
+	defer m.mLock.Unlock()
 
 	// generate new worker id by incr 1
 	// starts with 1
 	newWorkerId := len(m.Workers) + 1
 	newWorker := WorkerRec{
 		Id:    newWorkerId,
-		State: Worker_Idle,
+		State: WorkerIdle,
 	}
 	m.Workers = append(m.Workers, newWorker)
 	reply.Id = newWorkerId
-	reply.State = Worker_Idle
+	reply.State = WorkerIdle
 	return nil
 }
 
@@ -74,13 +80,13 @@ func (m *Master) RegisterWorker(_ *RegisterWorkerArgs, reply *RegisterWorkerRepl
 // must lock
 //
 func (m *Master) ListenHeartbeat(args *WorkerHeartbeatArgs, reply *WorkerHeartbeatReply) error {
-	mLock.Lock()
-	defer mLock.Unlock()
+	m.mLock.Lock()
+	defer m.mLock.Unlock()
 	fmt.Println("Heartbeat from worker ", args.Id)
 	workerId := args.Id
 	for idx, worker := range m.Workers {
 		if worker.Id == workerId {
-			worker.LastAlive = time.Now().Unix()
+			worker.LastHeartbeat = time.Now().Unix()
 			m.Workers[idx] = worker
 			reply.Ack = true
 			return nil
@@ -103,20 +109,20 @@ func (m *Master) AssignTask(args *TaskDistributeArgs, reply *TaskDistributeReply
 // response in the last 10 seconds
 //
 func (m *Master) scanWorkers() {
-	mLock.Lock()
-	defer mLock.Unlock()
+	m.mLock.Lock()
+	defer m.mLock.Unlock()
 	for idx, worker := range m.Workers {
 		// worker lost
-		timeGap := time.Now().Unix() - worker.LastAlive
+		timeGap := time.Now().Unix() - worker.LastHeartbeat
 		if timeGap > 10 {
 			// if this worker is dealing with some task
 			// assign the task to another idle worker
-			if worker.State == Worker_Busy {
+			if worker.State == WorkerBusy {
 
 			}
 
 			// mark the worker as lost
-			worker.State = Worker_Lost
+			worker.State = WorkerLost
 			m.Workers[idx] = worker
 		}
 	}
@@ -138,13 +144,13 @@ func (m *Master) printWorkers() {
 		fmt.Printf("Worker Id: %v    ", worker.Id)
 		state := "Idle"
 		switch worker.State {
-		case Worker_Idle:
+		case WorkerIdle:
 			state = "Idle"
 			break
-		case Worker_Busy:
+		case WorkerBusy:
 			state = "Busy"
 			break
-		case Worker_Lost:
+		case WorkerLost:
 			state = "Lost"
 			break
 		default:
@@ -158,10 +164,17 @@ func (m *Master) printWorkers() {
 // start a thread that listens for RPCs from worker.go
 //
 func (m *Master) server() {
-	rpc.Register(m)
+	registerErr := rpc.Register(m)
+	if registerErr != nil {
+		log.Fatal("dialing:", registerErr)
+	}
+
 	rpc.HandleHTTP()
 	//l, e := net.Listen("tcp", ":1234")
-	os.Remove("mr-socket")
+	removeErr := os.Remove("mr-socket")
+	if removeErr != nil {
+		log.Fatal("dialing:", removeErr)
+	}
 	l, e := net.Listen("unix", "mr-socket")
 	if e != nil {
 		log.Fatal("listen error:", e)
@@ -203,7 +216,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 		fmt.Println("file:", file)
 	}
 
-	// register tasks
+	// init tasks according to files
 
 	// rpc
 	// listen to workers
