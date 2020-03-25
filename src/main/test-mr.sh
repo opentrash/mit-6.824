@@ -119,11 +119,7 @@ rm -f mr-out* mr-worker*
 sleep 1
 
 ../mrworker ../../mrapps/rtiming.so &
-../mrworker ../../mrapps/rtiming.so &
-../mrworker ../../mrapps/rtiming.so &
 ../mrworker ../../mrapps/rtiming.so
-
-sleep 5
 
 NT=`cat mr-out* | grep '^[a-z] 2' | wc -l | sed 's/ //g'`
 if [ "$NT" -lt "2" ]
