@@ -124,6 +124,8 @@ func (m *Master) RegisterWorker(_ *RegisterWorkerArgs, reply *RegisterWorkerRepl
 //
 // worker's heartbeat
 // must lock
+// TODO
+// maybe master can give instructions to worker in HEARTBEAT
 //
 func (m *Master) ListenHeartbeat(args *WorkerHeartbeatArgs, reply *WorkerHeartbeatReply) error {
 	m.mLock.Lock()
