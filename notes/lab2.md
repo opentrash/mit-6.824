@@ -46,3 +46,6 @@ Keeping operation log is a very important strategy to ensure that all chunkserve
     - applying mutations to a chunk in the same order on all its replicas
     - using chunk version numbers to detect any replica that has become stale
 
+## System Interactions
+
+### Leases and Mutation Order
