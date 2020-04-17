@@ -49,3 +49,14 @@ Keeping operation log is a very important strategy to ensure that all chunkserve
 ## System Interactions
 
 ### Leases and Mutation Order
+1. The master grants a chunk lease to one of the replicas, which we call the primary.
+2. The primary picks a serial order for all mutations to the chunk. All replicas follow this order when applying mutations.
+
+### Flow between Master and Replicas
+1. The client asks the master which chunkserver holds the current lease for the chunk and the locations of the other replicas. **If no one has a lease, the master grants one to a replica it chooses**.
+2. The master replies with the identity of the primary and the locations of the other (secondary) replicas. The client caches this data for future mutations. It needs to contact the master again **only** when the primary becomes unreachable or replies that it no longer holds a lease.
+3. The client pushes the data to all the replicas. A client can do so in any order. Each chunkserver will store the data in an internal LRU buffer cache until the data is used or aged out. By decoupling the data flow from the control flow, we can improve performance by scheduling the expensive data flow based on the network topology regardless of which chuknserver is the primary.
+4. Once all the replicas have acknowledged receiving the data, the client sends a write request to the primary. The request identifies the data pushed earlier to all of the replicas. The primary assigns consecutive serial numbers to all the mutations it receives, possibly from multiple clients, which provides the necessary serialization. It applies the mutation to its own local state in serial number order.
+5. The primary forwards the write request to all secondary replicas. Each secondary replica applies mutations in the same serial number order assigned by the primary.
+6. The secondaries all reply to the primary indicating that they have completed the operation.
+7. The primary replies to the client. Any errors encountered at any of the replicas are reported to the client. **In case of errors**, the write may have succeeded at the primary and an arbitrary subset of the secondary replicas. (If it had failed at the primary, it would not have been assigned a serial number and forward.) The client request is considered to have failed, and the modified region is left in an **inconsistent state**. Our client code handles such errors by retrying the failed mutation. It will make a few attempts at steps (3) through (7) before failing back to a retry from the beginning of the write.
