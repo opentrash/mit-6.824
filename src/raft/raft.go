@@ -17,9 +17,14 @@ package raft
 //   in the same server.
 //
 
-import "sync"
-import "sync/atomic"
-import "labrpc"
+import (
+	"labrpc"
+	"sync"
+	"sync/atomic"
+
+	"math/rand"
+	"time"
+)
 
 // import "bytes"
 // import "labgob"
@@ -31,6 +36,9 @@ import "labrpc"
 // CommandValid to true to indicate that the ApplyMsg contains a newly
 // committed log entry.
 //
+
+// broadcastTime << electionTimeout << MTBF
+
 // in Lab 3 you'll want to send other kinds of messages (e.g.,
 // snapshots) on the applyCh; at that point you can add fields to
 // ApplyMsg, but set CommandValid to false for these other uses.
@@ -44,7 +52,6 @@ type ApplyMsg struct {
 //
 // A Go object implementing a single Raft peer.
 //
-// broadcastTime << electionTimeout << MTBF
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -55,7 +62,13 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+
+	rwmu            sync.RWMutex  // rw lock to read and write some state data
+	electionTimeout time.Duration // electionTimeout
+
+	// some channels
 	quitLeaderBroadcastHeartbeatCh chan bool
+	receiveLeaderHeartbeatCh       chan bool
 }
 
 // return currentTerm and whether this server
@@ -169,6 +182,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+
+	// random a electionTimeout in 150 ~ 300 ms
+	rand.Seed(time.Now().UnixNano())
+	rf.electionTimeout = time.Duration((rand.Intn(150) + 150)) * time.Millisecond
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

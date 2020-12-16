@@ -5,7 +5,7 @@ import (
 )
 
 const (
-	heartbeatInterval = 5000
+	heartbeatInterval = 100
 )
 
 // run only when this peer is leader
@@ -22,7 +22,7 @@ func (rf *Raft) sendHeartbeatToFollowers() {
 					reply := SendHeartbeatReply{}
 					ok := rf.sendHeartbeat(idx, &args, &reply)
 					// no heartbeat back
-					// @todo need to handle
+					// @todo need to handle heartbeat timeout
 					if !ok {
 
 					}
