@@ -1,1 +1,1 @@
-GOPATH=/Users/yechen.li/Git/mit-6.824:$GOPATH nvim
+GOPATH=/home/haduluoke/git/mit-6.824:$GOPATH nvim

@@ -1,32 +1,15 @@
 package raft
 
-import (
-	"time"
-)
-
-const (
-	heartbeatInterval = 100
-)
-
 // run only when this peer is leader
-func (rf *Raft) sendHeartbeatToFollowers() {
-	for {
-		time.Sleep(heartbeatInterval * time.Millisecond)
-		select {
-		case <-rf.quitLeaderBroadcastHeartbeatCh:
-			return
-		default:
-			for idx := range rf.peers {
-				if idx != rf.me {
-					args := SendHeartbeatArgs{}
-					reply := SendHeartbeatReply{}
-					ok := rf.sendHeartbeat(idx, &args, &reply)
-					// no heartbeat back
-					// @todo need to handle heartbeat timeout
-					if !ok {
+func (rf *Raft) appendEntriesToFollowers() {
+	for peerID := range rf.peers {
+		if peerID != rf.me {
+			args := AppendEntriesArgs{}
+			reply := AppendEntriesReply{}
+			ok := rf.appendEntries(peerID, &args, &reply)
+			// handle append entries response
+			if !ok {
 
-					}
-				}
 			}
 		}
 	}

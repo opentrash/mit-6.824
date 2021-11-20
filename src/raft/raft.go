@@ -67,8 +67,8 @@ type Raft struct {
 	electionTimeout time.Duration // electionTimeout
 
 	// some channels
-	quitLeaderBroadcastHeartbeatCh chan bool
-	receiveLeaderHeartbeatCh       chan bool
+	quitLeaderBroadcastAppendEntriesCh chan bool
+	receiveAppendEntriesCh             chan bool
 }
 
 // return currentTerm and whether this server
